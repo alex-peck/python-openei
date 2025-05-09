@@ -250,6 +250,68 @@ class Rates:
 
             return rate_structure
         return None
+    
+    @property
+    def next_energy_rate_structure(self) -> int | None:
+        """Return the next rate structure."""
+        return self.next_rate_schedule(datetime.datetime.today(), "energy")[1]
+    
+    @property
+    def next_energy_rate_structure_time(self) -> datetime.datetime | None:
+        """Return the time at which the next rate structure will take effect."""
+        return self.next_rate_schedule(datetime.datetime.today(), "energy")[0]
+    
+    def next_rate_schedule(self, start: datetime.datetime, rate_type: str) -> tuple[datetime.datetime | None, int | None]:
+        """
+        Return the next datetime at which the rate structure changes and the new rate structure.
+        This function is optimzied to avoid looping over every hour, day, month combination.
+        """
+        assert self._data is not None
+        if not f"{rate_type}ratestructure" in self._data:
+            return None, None
+        
+        current_structure = self.rate_structure(start, rate_type)
+        current_time = start
+        # Loop through the next 12 months
+        for month_idx in range(start.month - 1, 12 + start.month - 1):
+            current_time = current_time.replace(year=start.year + (month_idx // 12), month=(month_idx % 12) + 1, minute=0, second=0, microsecond=0)
+            day_of_week = current_time.weekday()
+
+            iterations = 2 # weekday and weekend
+            # If the current day is a weekday and the following day is a weekend, we may need to 
+            # check the next weekday following the weekend and vice versa
+            if current_time.hour > 0 and day_of_week in [4, 6]:
+                iterations += 1
+            while iterations > 0:
+                # End iterating if we moved into the next month. This should only occur when searching in the first month
+                if current_time.month != (month_idx % 12) + 1:
+                    break
+
+                day_of_week = current_time.weekday()
+                schedule = "weekendschedule" if day_of_week > 4 else "weekdayschedule"
+                table = f"{rate_type}{schedule}"
+                for hour in range(current_time.hour, 24 + current_time.hour):
+                    hour = hour % 24
+                    rate_structure = self._data[table][current_time.month - 1][hour]
+                    if rate_structure != current_structure:
+                        if hour < current_time.hour:
+                            # If the hour is less than the current hour, we have entered the next day. Ensure that day is the same day type
+                            # and we haven't moved to the next month
+                            if day_of_week not in [4, 6] and (current_time + datetime.timedelta(days=1)).month == current_time.month:
+                                return current_time.replace(day=current_time.day + 1, hour=hour), rate_structure
+                        else:
+                            return current_time.replace(hour=hour), rate_structure
+            
+                # Move forward in time to the next type of day (weekday/weekend)
+                days_to_move = 5 - day_of_week if day_of_week <= 4 else 7 - day_of_week
+                current_time += datetime.timedelta(days=days_to_move)
+                current_time = current_time.replace(hour=0)
+
+            current_time = current_time.replace(day=1)
+
+        # If we reach here, it means we didn't find a change in the next 12 months
+        # Assume the rate structure doesn't change
+        return None, current_structure
 
     @property
     def current_rate(self) -> float | None:
